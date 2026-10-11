@@ -642,7 +642,7 @@ final class ClaudeNativeApprovalAndResumeTests: XCTestCase {
                 creations += 1
                 return creations == 1 ? controller : (replacement ?? controller)
             },
-            autoEffortEnabledProvider: { true }
+            autoEffortConfigurationProvider: { .init(enabled: true, selectedBackendRawValue: nil, revision: 0) }
         )
         let session = AgentTabSession(tabID: UUID())
         session.selectedAgent = .claudeCode
@@ -783,7 +783,7 @@ final class ClaudeNativeApprovalAndResumeTests: XCTestCase {
             allowsCatalogRouteControllerRecovery: false,
             autoEffortSelection: .init(
                 provider: .claudeCode, selectedModelRaw: session.selectedModelRaw,
-                manualEffortRaw: "high", effortRaw: "low"
+                manualEffortRaw: "high", effortRaw: "low", backendID: .jev, autoEffortRevision: 0
             )
         )
         XCTAssertEqual(outcome, .sent)
@@ -907,7 +907,7 @@ final class ClaudeNativeApprovalAndResumeTests: XCTestCase {
                         provider: .claudeCode,
                         selectedModelRaw: session.selectedModelRaw,
                         manualEffortRaw: "high",
-                        effortRaw: "low"
+                        effortRaw: "low", backendID: .jev, autoEffortRevision: 0
                     )
                 )
             }

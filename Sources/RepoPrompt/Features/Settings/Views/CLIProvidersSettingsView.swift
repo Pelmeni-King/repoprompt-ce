@@ -52,7 +52,6 @@ struct CLIProvidersSettingsView: View {
     @State private var isLoadingGrokBuild = false
     @State private var isLoadingAntigravity = false
     @State private var isTestingAntigravity = false
-    @State private var isAntigravityInstalled = false
     @State private var isAntigravityExpanded = false
     @State private var isLoadingZAI = false
     @State private var showClaudeCodeTraceDump = false
@@ -92,12 +91,7 @@ struct CLIProvidersSettingsView: View {
     @State private var isKimiAdvancedExpanded: Bool = false
 
     private var shouldShowStatusBanner: Bool {
-        viewModel.isClaudeCodeConnected
-            || viewModel.isCodexConnected
-            || viewModel.isOpenCodeConnected
-            || viewModel.isCursorConnected
-            || viewModel.isGrokBuildConnected
-            || DevinRuntimeLocator.isInstalledSync()
+        !viewModel.directConnectedCLIProviders.isEmpty
     }
 
     private var codexStatusText: String? {
@@ -165,10 +159,10 @@ struct CLIProvidersSettingsView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear {
+            viewModel.refreshDirectCLIProviderConnectionState()
             viewModel.refreshDevinModels()
             Task {
                 await viewModel.loadCompatibleBackendState()
-                isAntigravityInstalled = AntigravityRuntimeManager.installedRuntimeSync() != nil
                 await viewModel.refreshClaudeCodeBinaryStatus()
             }
         }
@@ -435,7 +429,7 @@ struct CLIProvidersSettingsView: View {
             title: "Claude Code CLI",
             subtitle: "Uses your Claude Code CLI login for Anthropic models. Compatible backends below only need the `claude` binary and their own API keys.",
             infoURL: "https://docs.claude.com/en/docs/claude-code/setup",
-            isConnected: viewModel.isClaudeCodeConnected,
+            isConnected: viewModel.directConnectedCLIProviders.contains(.claudeCode),
             isExpanded: $isClaudeCodeExpanded
         ) {
             VStack(alignment: .leading, spacing: 12) {
@@ -1828,7 +1822,7 @@ struct CLIProvidersSettingsView: View {
             title: "Codex CLI",
             subtitle: "Runs RepoPrompt CE's managed Codex runtime with a separate sign-in from ~/.codex.",
             infoURL: "https://developers.openai.com/codex/cli/",
-            isConnected: viewModel.isCodexConnected,
+            isConnected: viewModel.directConnectedCLIProviders.contains(.codexExec),
             isExpanded: $isCodexExpanded
         ) {
             VStack(alignment: .leading, spacing: 12) {
@@ -2023,7 +2017,7 @@ struct CLIProvidersSettingsView: View {
             title: "OpenCode CLI",
             subtitle: "Uses OpenCode's ACP runtime for Agent Mode; headless OpenCode runs use a managed no-native-tools mode.",
             infoURL: "https://opencode.ai/",
-            isConnected: viewModel.isOpenCodeConnected,
+            isConnected: viewModel.directConnectedCLIProviders.contains(.openCode),
             isExpanded: $isOpenCodeExpanded
         ) {
             VStack(alignment: .leading, spacing: 12) {
@@ -2106,7 +2100,7 @@ struct CLIProvidersSettingsView: View {
             title: "Google Antigravity",
             subtitle: "Managed official Antigravity ACP runtime with Google OAuth authentication.",
             infoURL: "https://antigravity.google/",
-            isConnected: isAntigravityInstalled,
+            isConnected: viewModel.directConnectedCLIProviders.contains(.antigravity),
             isExpanded: $isAntigravityExpanded
         ) {
             VStack(alignment: .leading, spacing: 12) {
@@ -2117,7 +2111,7 @@ struct CLIProvidersSettingsView: View {
                             do {
                                 _ = try await AntigravityRuntimeManager.shared.install()
                                 await MainActor.run {
-                                    isAntigravityInstalled = true
+                                    viewModel.refreshDirectCLIProviderConnectionState()
                                     isLoadingAntigravity = false
                                     alertMessage = "Antigravity runtime installed. It will be authenticated when you start the first session."
                                     showAlert = true
@@ -2134,7 +2128,7 @@ struct CLIProvidersSettingsView: View {
                         if isLoadingAntigravity {
                             ProgressView().scaleEffect(0.6).frame(height: 16)
                         } else {
-                            Label(isAntigravityInstalled ? "Update Runtime" : "Install Runtime", systemImage: "arrow.down.circle")
+                            Label(viewModel.isAntigravityRuntimeInstalled ? "Update Runtime" : "Install Runtime", systemImage: "arrow.down.circle")
                         }
                     }
                     .disabled(isLoadingAntigravity)
@@ -2167,10 +2161,10 @@ struct CLIProvidersSettingsView: View {
                         if isTestingAntigravity { ProgressView().scaleEffect(0.6).frame(height: 16) }
                         else { Label("Test Connection", systemImage: "antenna.radiowaves.left.and.right") }
                     }
-                    .disabled(isTestingAntigravity || !isAntigravityInstalled)
+                    .disabled(isTestingAntigravity || !viewModel.isAntigravityRuntimeInstalled)
                     .buttonStyle(CustomButtonStyle())
 
-                    Text(isAntigravityInstalled ? "Runtime ready. Google login will be requested by ACP." : "Runtime not installed.")
+                    Text(viewModel.isAntigravityRuntimeInstalled ? "Runtime ready. Google login will be requested by ACP." : "Runtime not installed.")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
@@ -2179,7 +2173,7 @@ struct CLIProvidersSettingsView: View {
     }
 
     private var devinCard: some View {
-        let isInstalled = DevinRuntimeLocator.isInstalledSync()
+        let isInstalled = viewModel.directConnectedCLIProviders.contains(.devin)
         return providerCard(
             title: "Devin CLI",
             subtitle: "Uses the installed `devin acp` runtime for interactive Agent Mode and Oracle.",
@@ -2231,7 +2225,7 @@ struct CLIProvidersSettingsView: View {
             title: "Grok Build",
             subtitle: "Uses xAI's Grok Build ACP runtime (`grok agent stdio`) for Agent Mode and headless tasks. RepoPrompt MCP tools are added through the ACP session.",
             infoURL: "https://docs.x.ai/build/overview",
-            isConnected: viewModel.isGrokBuildConnected,
+            isConnected: viewModel.directConnectedCLIProviders.contains(.grokBuild),
             isExpanded: $isGrokBuildExpanded
         ) {
             VStack(alignment: .leading, spacing: 12) {
@@ -2310,7 +2304,7 @@ struct CLIProvidersSettingsView: View {
             title: "Cursor CLI",
             subtitle: "Uses Cursor's ACP runtime for Agent Mode, headless tasks, and chat. RepoPrompt MCP tools are added only for agent/headless runs.",
             infoURL: "https://cursor.com/cli",
-            isConnected: viewModel.isCursorConnected,
+            isConnected: viewModel.directConnectedCLIProviders.contains(.cursor),
             isExpanded: $isCursorExpanded
         ) {
             VStack(alignment: .leading, spacing: 12) {

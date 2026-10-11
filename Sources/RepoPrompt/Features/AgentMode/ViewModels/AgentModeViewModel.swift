@@ -379,6 +379,7 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
                 )
             }
             syncComposerUIState()
+            syncStatusPillsUIState()
             syncRuntimeMetricsUIState()
             syncRunInteractionUIState()
         }
@@ -772,7 +773,7 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
     var modelRouterRuntime: AgentTaskRouterRuntime?
     struct StagedTaskRoutingResult {
         let candidates: [AgentTaskRoutingCandidateBuilder.Candidate]
-        let outcome: AgentTaskRoutingBackendOutcome
+        let outcome: DecisionOutcome
         var judgmentRequested = false
         var effortFallback = false
         var usageBalancingReason: String?
@@ -2563,7 +2564,7 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
             hasActiveChildAgentRunWaits: { [weak mcpServer] runID in
                 mcpServer?.hasActiveChildAgentRunWaits(runID: runID) ?? false
             },
-            autoEffortEnabledProvider: { [modelRouterSettingsStore] in modelRouterSettingsStore.autoEffortEnabled() }
+            autoEffortConfigurationProvider: { [modelRouterSettingsStore] in modelRouterSettingsStore.autoEffortConfiguration() }
         )
         self.clearConsumedAttachmentsAfterProviderConsumption = clearConsumedAttachmentsAfterProviderConsumption
         workspaceSwitchProvider = AgentModeWorkspaceSwitchCleanupProvider(
@@ -2816,7 +2817,7 @@ final class AgentModeViewModel: ObservableObject, CodexManagedSessionShutdownPar
                 hasActiveChildAgentRunWaits: { [weak testMCPServer] runID in
                     testMCPServer?.hasActiveChildAgentRunWaits(runID: runID) ?? false
                 },
-                autoEffortEnabledProvider: { [testModelRouterSettingsStore] in testModelRouterSettingsStore.autoEffortEnabled() }
+                autoEffortConfigurationProvider: { [testModelRouterSettingsStore] in testModelRouterSettingsStore.autoEffortConfiguration() }
             )
             self.clearConsumedAttachmentsAfterProviderConsumption = clearConsumedAttachmentsAfterProviderConsumption
             workspaceSwitchProvider = AgentModeWorkspaceSwitchCleanupProvider(

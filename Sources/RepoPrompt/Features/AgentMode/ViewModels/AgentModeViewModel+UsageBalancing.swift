@@ -13,8 +13,10 @@ extension AgentModeViewModel {
         let availability = scope == .subagent
             ? modelRouterAvailabilityContext.filteredForRecommendationProviders(modelRouterSettingsStore.globalRecommendationProviderFilter())
             : modelRouterAvailabilityContext
-        let preferred = scope == .subagent ? configuration.subagentProvider : configuration.primaryProvider
-        let allowed = AgentTaskRoutingCandidateBuilder.providers(preferring: preferred, from: AgentTaskRoutingCandidateBuilder.availableProviders(availability: availability, surface: surface))
+        let allowed = AgentTaskRoutingCandidateBuilder.availableProviders(
+            availability: availability,
+            surface: surface
+        )
         guard let input = AgentTaskRoutingCandidateBuilder().usageCandidates(basedOn: target, allowedProviders: allowed, availability: availability, surface: surface) else { return nil }
         let decision = advisor.choose(selected: input.selected, candidates: input.candidates, evidence: nil, configuration: configuration)
         return decision.reason == nil ? nil : decision
@@ -37,7 +39,7 @@ extension AgentModeViewModel {
         guard freshTaskRoutingEligibility(session: session, text: text),
               composerSubmitClaimIsCurrent(claim),
               let decision = localUsageDecision(basedOn: balancingBaseline, scope: .primarySession, surface: .general),
-              applyRoutingTarget(decision.candidate.target, to: session)
+              applyRoutingTarget(decision.candidate, to: session)
         else {
             return await submitUserTurnAfterAutoEffort(text: text, claim: claim, session: session, destinationTabID: destinationTabID, routerAudit: routerAudit)
         }
