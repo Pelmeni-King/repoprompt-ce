@@ -38,7 +38,7 @@ final class AutoEffortSettingsPersistenceTests: XCTestCase {
                 schemaLineage: loaded.schemaLineage,
                 supportedVersion: GlobalSettingsDocument.scopedModelRouterSchemaVersion
             ),
-            .unsupportedFutureSchema(onDiskVersion: 11, supportedVersion: 10)
+            .unsupportedFutureSchema(onDiskVersion: 12, supportedVersion: 10)
         )
     }
 

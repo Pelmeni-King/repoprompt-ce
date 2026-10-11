@@ -229,6 +229,7 @@ package class GlobalSettingsStore: ObservableObject, CodexHookApprovalSettingsPr
         AgentModelsSettingsProfile(
             planningModelRaw: scalarPreferences.modelSelection?.planningModel,
             additionalOracleModelRaws: scalarPreferences.modelSelection?.additionalOracleModels ?? [],
+            oracleReconciliationGuidance: scalarPreferences.modelSelection?.oracleReconciliationGuidance,
             preferredComposeModelRaw: scalarPreferences.modelSelection?.preferredComposeModel,
             syncChatModelWithOracle: resolvedSyncChatModelWithOracleFromCurrentPreferences(),
             contextBuilderAgentRaw: globalDefaults.discoverAgentRaw,
@@ -251,6 +252,7 @@ package class GlobalSettingsStore: ObservableObject, CodexHookApprovalSettingsPr
         modelSelection.additionalOracleModels = normalized.additionalOracleModelRaws.isEmpty
             ? nil
             : normalized.additionalOracleModelRaws
+        modelSelection.oracleReconciliationGuidance = normalized.oracleReconciliationGuidance
         modelSelection.preferredComposeModel = normalized.preferredComposeModelRaw
         modelSelection.syncChatModelWithOracle = normalized.syncChatModelWithOracle
         scalarPreferences.modelSelection = modelSelection
@@ -1912,6 +1914,7 @@ package class GlobalSettingsStore: ObservableObject, CodexHookApprovalSettingsPr
         var normalized = AgentModelsSettingsProfile(
             planningModelRaw: profile.planningModelRaw,
             additionalOracleModelRaws: profile.additionalOracleModelRaws,
+            oracleReconciliationGuidance: profile.oracleReconciliationGuidance,
             preferredComposeModelRaw: profile.preferredComposeModelRaw,
             syncChatModelWithOracle: profile.syncChatModelWithOracle,
             contextBuilderAgentRaw: profile.contextBuilderAgentRaw,

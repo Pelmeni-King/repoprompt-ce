@@ -42,6 +42,7 @@ struct OracleExportRequest {
     let chatID: String?
     let response: String?
     let groupResult: OracleGroupResult?
+    let reconciliationGuidance: String?
     let destination: OracleExportDestination?
 
     init(
@@ -51,6 +52,7 @@ struct OracleExportRequest {
         chatID: String?,
         response: String?,
         groupResult: OracleGroupResult? = nil,
+        reconciliationGuidance: String? = nil,
         destination: OracleExportDestination? = nil
     ) {
         self.sourceTool = sourceTool
@@ -59,16 +61,21 @@ struct OracleExportRequest {
         self.chatID = chatID
         self.response = response
         self.groupResult = groupResult
+        self.reconciliationGuidance = reconciliationGuidance
         self.destination = destination
     }
 }
 
 enum AgentOracleExport {
-    static func instruction(path: String) -> String {
+    static func instruction(path: String, oracleLaneCount: Int? = nil) -> String {
         let pathLiteral = jsonStringLiteral(path)
-        return """
+        let base = """
         Read the Oracle export with `read_file` using `{"path": \(pathLiteral)}`. Use this exact absolute `path` value verbatim without shortening or rewriting it, and use the file as planning context for this task.
         """
+        guard let requirement = OracleGroupDeliveryContract.exportReadingRequirement(laneCount: oracleLaneCount ?? 0) else {
+            return base
+        }
+        return base + " " + requirement
     }
 
     private static func jsonStringLiteral(_ value: String) -> String {
@@ -90,7 +97,7 @@ enum AgentOracleExport {
             "# Oracle Response"
         }
         if let groupResult = request.groupResult {
-            return "\(title)\n\n\(groupMarkdown(groupResult))"
+            return "\(title)\n\n\(groupMarkdown(groupResult, reconciliationGuidance: request.reconciliationGuidance))"
         }
         let response: String = if let responseText = request.response,
                                   !responseText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -102,7 +109,8 @@ enum AgentOracleExport {
         return "\(title)\n\n\(response)"
     }
 
-    private static func groupMarkdown(_ result: OracleGroupResult) -> String {
+    private static func groupMarkdown(_ result: OracleGroupResult, reconciliationGuidance: String?) -> String {
+        let lanes = result.oracleResults.sorted { $0.laneIndex < $1.laneIndex }
         var sections = [
             """
             ## Oracle group
@@ -117,8 +125,23 @@ enum AgentOracleExport {
                     .joined(separator: "\n")
             )
         }
+        if let preamble = OracleGroupDeliveryContract.preamble(lanes: lanes.map { lane in
+            OracleGroupDeliveryContract.Lane(
+                laneIndex: lane.laneIndex,
+                modelID: lane.executionProfile?.modelID ?? lane.modelID,
+                chatID: lane.chatID,
+                status: lane.status.rawValue,
+                response: lane.response,
+                partialResponse: lane.error?.partialResponse
+            )
+        }, reconciliationGuidance: reconciliationGuidance) {
+            sections.append(preamble)
+        }
         sections.append("## Oracle results")
-        sections.append(contentsOf: result.oracleResults.map(laneMarkdown))
+        sections.append(contentsOf: lanes.map(laneMarkdown))
+        if let endMarker = OracleGroupDeliveryContract.endMarker(laneCount: lanes.count) {
+            sections.append(endMarker)
+        }
         return sections.joined(separator: "\n\n")
     }
 
@@ -498,6 +521,14 @@ struct AgentRunMCPToolService {
             await resolveSpawnParentSessionID(metadata, targetWindow)
         }
         let resolvedTabID = try resolveRequestedTabID(args)
+        let residentActivationTarget: MCPResidentTarget? = if let resolvedTabID,
+                                                              let existingID = agentModeVM.session(for: resolvedTabID, createIfNeeded: false)?.activeAgentSessionID
+        {
+            // Spawn routing and workspace authority were validated above; retain that policy.
+            try await agentModeVM.mcpPreflightResidentActivation(sessionID: existingID)
+        } else {
+            nil
+        }
         #if DEBUG
             perfRecorder.event("mcp.routing.agentRunStartParentResolved", tabID: parentSourceTabID, fields: [
                 "connectionID": metadata.connectionID?.uuidString ?? "nil",
@@ -623,6 +654,9 @@ struct AgentRunMCPToolService {
         let effectiveParentWorktreeInheritance = worktreeStartRequest.inheritParentWorktreeBindings
             && !worktreeStartRequest.hasExplicitWorktreeArgs
         let usesRoutedParentSource = parentSourceTabID != nil
+        if let residentActivationTarget {
+            try agentModeVM.mcpRequireResidentActivationFence(residentActivationTarget)
+        }
         let target = try await agentModeVM.mcpResolveOrCreateSessionTarget(
             tabID: resolvedTabID,
             sessionID: nil,
@@ -900,6 +934,11 @@ struct AgentRunMCPToolService {
                 }
             #endif
             WorktreeStartupInstrumentation.record(.providerStart, context: worktreeStartupContext)
+            if let residentActivationTarget,
+               spawnParentSessionID == nil || spawnParentSessionID == residentActivationTarget.endpoint.sessionID
+            {
+                try agentModeVM.mcpRequireResidentActivationFence(residentActivationTarget)
+            }
             providerDispatchAttempted = true
             modelParameterStagingRollback = try agentModeVM.mcpStageModelParameterSelections(
                 tabID: target.tabID,
@@ -1039,6 +1078,14 @@ struct AgentRunMCPToolService {
             agentModeVM: agentModeVM,
             metadata: metadata
         )
+        if forcePoll, let resident = try agentModeVM.mcpResidentTarget(sessionID: sessionID, requiringLoadedState: true) {
+            let (snapshot, overseer) = try await residentPoll(
+                resident, targetWindow: targetWindow, agentModeVM: agentModeVM, metadata: metadata
+            )
+            var object = snapshot.asObject()
+            object["overseer"] = overseer
+            return .object(object)
+        }
         let capturedDefaultWaitSeconds = Self.capturedDefaultWaitTimeoutSeconds()
         let timeoutSeconds = try forcePoll
             ? 0
@@ -1167,10 +1214,29 @@ struct AgentRunMCPToolService {
         return targetWindow.agentModeViewModel
     }
 
+    private func residentPoll(
+        _ target: MCPResidentTarget, targetWindow: WindowState,
+        agentModeVM: AgentModeViewModel, metadata: RequestMetadata
+    ) async throws -> (AgentRunMCPSnapshot, Value) {
+        let hasLinks = await agentModeVM.agentSessionLinkHasActiveOutboundLink(target.endpoint)
+        try await authorizeControlTargets(
+            operation: .runPoll, sessionIDs: [target.endpoint.sessionID], reference: nil,
+            targetWindow: targetWindow, agentModeVM: agentModeVM, metadata: metadata
+        )
+        guard !targetWindow.isClosing, !WindowStatesManager.shared.isTerminating,
+              targetWindow.windowID == target.endpoint.windowID,
+              agentModeVM.mcpResidentTargetIsCurrent(target)
+        else { throw MCPError.invalidParams(AgentModeViewModel.mcpResidentTargetError) }
+        return try (
+            agentModeVM.mcpResidentSnapshot(target),
+            agentModeVM.mcpResidentOverseerValue(target, hasOutboundLinks: hasLinks)
+        )
+    }
+
     private func executePollMany(args: [String: Value]) async throws -> Value {
         let references = try parseSessionIDArray(args)
         let targetWindow = try requireTargetWindow()
-        let agentModeVM = targetWindow.agentModeViewModel
+        let agentModeVM = resolvedAgentModeViewModel(targetWindow)
         let sessionIDs = try await resolveControlSessionIDs(references, targetWindow: targetWindow, agentModeVM: agentModeVM)
         let metadata = await captureRequestMetadata()
         // All-or-nothing: authorize every requested target before returning any snapshot.
@@ -1182,8 +1248,20 @@ struct AgentRunMCPToolService {
             agentModeVM: agentModeVM,
             metadata: metadata
         )
-        let snapshots = await collectCurrentSnapshots(sessionIDs: sessionIDs, agentModeVM: agentModeVM)
-        return decoratedMultiPollValue(sessionIDs: sessionIDs, snapshots: snapshots)
+        var snapshots: [AgentRunMCPSnapshot] = []
+        var overseers: [UUID: Value] = [:]
+        for sessionID in sessionIDs {
+            if let resident = try agentModeVM.mcpResidentTarget(sessionID: sessionID, requiringLoadedState: true) {
+                let (snapshot, overseer) = try await residentPoll(
+                    resident, targetWindow: targetWindow, agentModeVM: agentModeVM, metadata: metadata
+                )
+                snapshots.append(snapshot)
+                overseers[sessionID] = overseer
+            } else {
+                await snapshots.append(currentSnapshot(sessionID: sessionID, agentModeVM: agentModeVM))
+            }
+        }
+        return decoratedMultiPollValue(sessionIDs: sessionIDs, snapshots: snapshots, overseers: overseers)
     }
 
     private func executeCancel(args: [String: Value]) async throws -> Value {
@@ -1244,6 +1322,26 @@ struct AgentRunMCPToolService {
         )
         let text = try resolveMessage(args["message"], name: "message")
         let workflow = try resolveWorkflow(args: args)
+        if let resident = try agentModeVM.mcpResidentTarget(sessionID: sessionID) {
+            let shouldWait = parseBool(args["wait"]) ?? (args["timeout_seconds"] != nil)
+            guard !shouldWait else { throw MCPError.invalidParams(AgentModeViewModel.mcpResidentWaitError) }
+            let delivery = try await agentModeVM.mcpSubmitResidentTask(
+                resident, text: text, workflow: workflow,
+                windowIsAvailable: {
+                    targetWindow.windowID == resident.endpoint.windowID
+                        && !targetWindow.isClosing && !WindowStatesManager.shared.isTerminating
+                }
+            )
+            guard agentModeVM.mcpResidentTargetIsCurrent(resident) else {
+                throw MCPError.invalidParams(AgentModeViewModel.mcpResidentUnconfirmedError)
+            }
+            let snapshot = try agentModeVM.mcpResidentSnapshot(resident)
+            return decoratedRunValue(
+                snapshot: snapshot, workflow: workflow, delivery: delivery,
+                warning: args["timeout_seconds"] != nil
+                    ? "Ignoring timeout_seconds because wait=false; the steering instruction was accepted without waiting." : nil
+            )
+        }
         let resolution = try await ensureSteerControlContext(
             sessionID: sessionID,
             targetWindow: targetWindow,
@@ -1445,6 +1543,9 @@ struct AgentRunMCPToolService {
             throw MCPError.invalidParams("Session '\(sessionID.uuidString)' was not found in the active workspace.")
         }
 
+        if try agentModeVM.mcpResidentTarget(sessionID: sessionID) != nil {
+            throw MCPError.invalidParams(AgentModeViewModel.mcpResidentTargetError)
+        }
         let target = try await agentModeVM.mcpResolveOrCreateSessionTarget(
             tabID: nil,
             sessionID: sessionID,
@@ -2490,7 +2591,8 @@ struct AgentRunMCPToolService {
 
     private nonisolated func decoratedMultiPollValue(
         sessionIDs: [UUID],
-        snapshots: [AgentRunMCPSnapshot]
+        snapshots: [AgentRunMCPSnapshot],
+        overseers: [UUID: Value] = [:]
     ) -> Value {
         let interestingIDs = snapshots.filter { isInterestingSnapshot($0) }.map(\.sessionID)
         let runningIDs = snapshots.filter { $0.status == .running }.map(\.sessionID)
@@ -2504,7 +2606,11 @@ struct AgentRunMCPToolService {
                 "running_session_ids": .array(runningIDs.map { .string($0.uuidString) }),
                 "terminal_session_ids": .array(terminalIDs.map { .string($0.uuidString) })
             ]),
-            "snapshots": .array(snapshots.map { .object($0.asObject()) })
+            "snapshots": .array(snapshots.map {
+                var object = $0.asObject()
+                if let overseer = overseers[$0.sessionID] { object["overseer"] = overseer }
+                return .object(object)
+            })
         ])
     }
 

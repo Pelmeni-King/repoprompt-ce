@@ -35,6 +35,27 @@ final class SettingsCoreContractTests: XCTestCase {
         }
     }
 
+    func testOracleGuidanceAndAutoEffortServiceUseSeparateSchemaFences() throws {
+        let document = GlobalSettingsDocument(scalarPreferences: GlobalScalarPreferences(
+            modelSelection: .init(oracleReconciliationGuidance: "Keep guidance"),
+            agentMode: .init(autoEffortBackendRawValue: "openai-decisions")
+        ))
+        XCTAssertEqual(GlobalSettingsDocument.oracleReconciliationGuidanceSchemaVersion, 11)
+        XCTAssertEqual(GlobalSettingsDocument.autoEffortServiceSchemaVersion, 12)
+        XCTAssertEqual(document.requiredSchemaVersion, 12)
+        let decoded = try JSONDecoder().decode(GlobalSettingsDocument.self, from: JSONEncoder().encode(document))
+        XCTAssertEqual(decoded.scalarPreferences?.modelSelection?.oracleReconciliationGuidance, "Keep guidance")
+        XCTAssertEqual(decoded.scalarPreferences?.agentMode?.autoEffortBackendRawValue, "openai-decisions")
+        XCTAssertEqual(
+            GlobalSettingsFileStore.preservationBlockReason(
+                schemaVersion: document.requiredSchemaVersion,
+                schemaLineage: document.schemaLineage,
+                supportedVersion: GlobalSettingsDocument.oracleReconciliationGuidanceSchemaVersion
+            ),
+            .unsupportedFutureSchema(onDiskVersion: 12, supportedVersion: 11)
+        )
+    }
+
     func testComputerUseOptInIsAdditiveAndRoundTripsBothValues() throws {
         let decoder = JSONDecoder()
         let oldSettings = try decoder.decode(GlobalScalarPreferences.AgentModeSettings.self, from: Data("{}".utf8))
