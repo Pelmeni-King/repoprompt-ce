@@ -88,16 +88,16 @@ final class RouterSettingsViewModelTests: XCTestCase {
         await drainMainRunLoop()
         XCTAssertEqual(accounting.refreshCompletionCount, initialRefreshCount)
 
-        let autoEffortRefresh = accounting.expectRefreshCompletion(description: "Auto Effort settings refresh") { _ in true }
-        fixture.store.setAutoEffortEnabled(true)
-        await fulfillment(of: [autoEffortRefresh], timeout: 1)
+        await accounting.performAndAwaitRefresh(matching: { _ in fixture.viewModel.autoEffortEnabled }) {
+            fixture.store.setAutoEffortEnabled(true)
+        }
         XCTAssertTrue(fixture.viewModel.autoEffortEnabled)
 
-        let routerRefresh = accounting.expectRefreshCompletion(description: "Router settings refresh") {
+        await accounting.performAndAwaitRefresh(matching: {
             $0.selectedBackendID == .openAIDecisions
+        }) {
+            fixture.store.setModelRouterBackend(.openAIDecisions)
         }
-        fixture.store.setModelRouterBackend(.openAIDecisions)
-        await fulfillment(of: [routerRefresh], timeout: 1)
         XCTAssertEqual(fixture.viewModel.selectedBackendID, .openAIDecisions)
     }
 
@@ -1011,24 +1011,24 @@ final class RouterSettingsViewModelTests: XCTestCase {
         XCTAssertEqual(fixture.viewModel.targetPreviews, [Self.preview(for: availability.value)])
 
         let selectedRevision = fixture.store.modelRouterConfiguration().revision
-        let selectionRefresh = accounting.expectRefreshCompletion(description: "selected backend refresh") {
+        await accounting.performAndAwaitRefresh(matching: {
             $0.selectedBackendID == .openAIDecisions && $0.revision > selectedRevision
+        }) {
+            fixture.viewModel.selectBackend(.openAIDecisions)
+            XCTAssertEqual(fixture.viewModel.selectedBackendID, .openAIDecisions)
+            XCTAssertGreaterThan(fixture.store.modelRouterConfiguration().revision, selectedRevision)
         }
-        fixture.viewModel.selectBackend(.openAIDecisions)
-        XCTAssertEqual(fixture.viewModel.selectedBackendID, .openAIDecisions)
-        XCTAssertGreaterThan(fixture.store.modelRouterConfiguration().revision, selectedRevision)
-        await fulfillment(of: [selectionRefresh], timeout: 1)
         XCTAssertEqual(fixture.viewModel.serviceRows.map(\.id), [.jev, .openAIDecisions])
         XCTAssertEqual(accounting.previewBuildCount, 1)
 
         let enabledRevision = fixture.store.modelRouterConfiguration().revision
-        let enableRefresh = accounting.expectRefreshCompletion(description: "enabled router refresh") {
+        await accounting.performAndAwaitRefresh(matching: {
             $0.enabled && $0.revision > enabledRevision
+        }) {
+            fixture.viewModel.setEnabled(true)
+            XCTAssertTrue(fixture.viewModel.configuration.enabled)
+            XCTAssertGreaterThan(fixture.store.modelRouterConfiguration().revision, enabledRevision)
         }
-        fixture.viewModel.setEnabled(true)
-        XCTAssertTrue(fixture.viewModel.configuration.enabled)
-        XCTAssertGreaterThan(fixture.store.modelRouterConfiguration().revision, enabledRevision)
-        await fulfillment(of: [enableRefresh], timeout: 1)
         XCTAssertEqual(fixture.viewModel.serviceRows.map(\.id), [.jev, .openAIDecisions])
         XCTAssertEqual(accounting.previewBuildCount, 1)
 
@@ -1452,7 +1452,7 @@ private final class MutableAvailabilityContext {
 private final class PreviewRefreshAccounting {
     private struct PendingRefreshCompletion {
         let predicate: (AgentTaskRouterConfiguration) -> Bool
-        let expectation: XCTestExpectation
+        let complete: () -> Void
     }
 
     private var pendingRefreshCompletions: [PendingRefreshCompletion] = []
@@ -1468,15 +1468,26 @@ private final class PreviewRefreshAccounting {
         matching predicate: @escaping (AgentTaskRouterConfiguration) -> Bool
     ) -> XCTestExpectation {
         let expectation = XCTestExpectation(description: description)
-        pendingRefreshCompletions.append(.init(predicate: predicate, expectation: expectation))
+        pendingRefreshCompletions.append(.init(predicate: predicate, complete: { expectation.fulfill() }))
         return expectation
+    }
+
+    /// Await the subscription's real refresh, without scheduling one ourselves or timing main-run-loop delivery.
+    func performAndAwaitRefresh(
+        matching predicate: @escaping (AgentTaskRouterConfiguration) -> Bool,
+        mutation: () -> Void
+    ) async {
+        await withCheckedContinuation { continuation in
+            pendingRefreshCompletions.append(.init(predicate: predicate, complete: { continuation.resume() }))
+            mutation()
+        }
     }
 
     func recordRefreshCompletion(_ configuration: AgentTaskRouterConfiguration) {
         refreshCompletionCount += 1
         pendingRefreshCompletions.removeAll { pending in
             guard pending.predicate(configuration) else { return false }
-            pending.expectation.fulfill()
+            pending.complete()
             return true
         }
     }
