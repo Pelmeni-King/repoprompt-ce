@@ -315,6 +315,19 @@ struct AgentComputerUseComposerProps: Equatable {
 }
 
 struct AgentComposerProps: Equatable {
+    enum ManualEffortControl: Equatable {
+        case codex
+        case claude
+    }
+
+    /// Auto Effort status is informational; users can still choose the fallback effort.
+    var manualEffortControl: ManualEffortControl? {
+        guard hasAvailableAgentProviders, !isGlobalModelRouterControllingFreshTask else { return nil }
+        if selectedAgent == .codexExec { return .codex }
+        if selectedAgent.usesClaudeTooling, providerControls?.claudeTools != nil { return .claude }
+        return nil
+    }
+
     var computerUse: AgentComputerUseComposerProps = .hidden
     let currentTabID: UUID?
     let submitTarget: AgentComposerSubmitTarget?

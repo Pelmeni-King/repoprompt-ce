@@ -689,15 +689,12 @@ struct AgentComposerView: View, Equatable {
                         } else {
                             agentProviderModelPicker
                             acpModelParameterPickers
-                            if let autoEffortServiceName = props.autoEffortServiceName {
-                                if props.selectedAgent == .codexExec
-                                    || (props.selectedAgent.usesClaudeTooling && props.providerControls?.claudeTools != nil)
-                                {
-                                    automaticEffortChip(serviceName: autoEffortServiceName)
-                                }
-                            } else {
-                                reasoningEffortPicker
-                                claudeEffortPicker
+                            reasoningEffortPicker
+                            claudeEffortPicker
+                            if let autoEffortServiceName = props.autoEffortServiceName,
+                               props.manualEffortControl != nil
+                            {
+                                automaticEffortChip(serviceName: autoEffortServiceName)
                             }
                             codexToolsButton
                             claudeToolsButton
@@ -1098,7 +1095,7 @@ struct AgentComposerView: View, Equatable {
 
     @ViewBuilder
     private var reasoningEffortPicker: some View {
-        if props.selectedAgent == .codexExec {
+        if props.manualEffortControl == .codex {
             let efforts = actions.reasoningEffortOptionsForCurrentSelection()
             Menu {
                 ForEach(efforts, id: \.rawValue) { effort in
@@ -1180,7 +1177,7 @@ struct AgentComposerView: View, Equatable {
 
     @ViewBuilder
     private var claudeEffortPicker: some View {
-        if props.selectedAgent.usesClaudeTooling,
+        if props.manualEffortControl == .claude,
            let claudeTools = props.providerControls?.claudeTools
         {
             let efforts = AgentModelCatalog.supportedClaudeEfforts(

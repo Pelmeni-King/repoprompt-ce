@@ -1,6 +1,6 @@
 # Model Routing and Decision Services
 
-Current as of 2026-10-10. Routing uses bundled profile annotations only; remote routing-profile update machinery has been retired.
+Current as of 2026-10-13. Routing uses bundled profile annotations only; remote routing-profile update machinery has been retired.
 
 ## Authorities and dispatch
 
@@ -27,6 +27,8 @@ For a routed new task, the selected service receives bounded user-authored task 
 Tip’s quota-aware usage balancing remains a local, opt-in policy. It can substitute a currently executable Codex/Claude peer before the effort decision; peers carry the same catalog scope and profile identity checks as Router choices. Explicit cancellation blocks submission even after substitution. The separate paid Fast opt-in only admits provider-advertised Fast targets to Router effort choices; it never synthesizes a model or enables Fast implicitly.
 
 ## Auto Effort
+
+Outside a Router-owned fresh start, the composer retains the provider's manual effort picker alongside the informational Auto Effort status. Users can inspect and change the fallback effort without disabling Auto Effort, including for custom workflows and unavailable decision services. Normal provider, MCP-ownership and active-run control locks still apply.
 
 Auto Effort is separately enabled and defaults off. Its exact decision-service selection persists as a raw ID; its revision is process-local and held in memory. An absent service field from older settings resolves to Jev **in memory** without writing it. Explicit blank/unknown IDs remain stored and unavailable; they do not become Jev. Router and Auto Effort may select the same service or different services, with independent demand and revision cancellation. A selection while disabled does not bootstrap a service; viewing Settings cards does not create demand.
 

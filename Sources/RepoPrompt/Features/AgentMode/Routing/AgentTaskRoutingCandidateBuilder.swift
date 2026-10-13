@@ -321,6 +321,19 @@ struct AgentTaskRoutingCandidateBuilder {
         return false
     }
 
+    /// Saved scope intent narrows the executable frontier only while that provider is available.
+    static func providers(
+        for scope: AgentTaskRoutingScope,
+        configuration: AgentTaskRouterConfiguration,
+        availability: AgentModelCatalog.AvailabilityContext,
+        surface: AgentModelCatalog.AgentSelectionSurface = .general
+    ) -> Set<AgentProviderKind> {
+        let available = availableProviders(availability: availability, surface: surface)
+        let preferred = scope == .primarySession ? configuration.primaryProvider : configuration.subagentProvider
+        if let preferred, available.contains(preferred) { return [preferred] }
+        return available
+    }
+
     static func availableProviders(
         availability: AgentModelCatalog.AvailabilityContext,
         surface: AgentModelCatalog.AgentSelectionSurface = .general,
