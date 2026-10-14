@@ -187,6 +187,8 @@ extension AgentComposerSubmissionAttemptTests {
         let text = "Implement parser and tests"
         _ = try XCTUnwrap(viewModel.test_installPersistentSessionBinding(sessionID: UUID(), on: session))
         session.hasLoadedPersistedState = true
+        // An installed binding admits operations only after restoration is authoritative (#1363).
+        session.recordRestorationAuthoritative(.persistedPayloadApplied)
         let claim = try routingClaim(viewModel: viewModel, session: session, text: text)
 
         let result = await viewModel.submitUserTurnAfterFreshTaskRouting(
@@ -750,6 +752,8 @@ extension AgentComposerSubmissionAttemptTests {
         session.selectedModelRaw = "gpt-6.1-sol-high"
         _ = try XCTUnwrap(viewModel.test_installPersistentSessionBinding(sessionID: UUID(), on: session))
         session.hasLoadedPersistedState = true
+        // An installed binding admits operations only after restoration is authoritative (#1363).
+        session.recordRestorationAuthoritative(.persistedPayloadApplied)
         let baseline = viewModel.executableTarget(for: session)
         XCTAssertNil(viewModel.localUsageDecision(basedOn: baseline, scope: .primarySession, surface: .general))
         let child = try await viewModel.routeSubagentTargetIfEnabled(task: "Implement parser", surface: .headless, baseline: baseline)
