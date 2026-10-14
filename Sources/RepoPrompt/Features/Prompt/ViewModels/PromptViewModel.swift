@@ -2998,6 +2998,19 @@ class PromptViewModel: ObservableObject {
         snapshotActiveComposeTabIfNeeded(in: manager, workspaceIndex: index)
     }
 
+    /// Preserve the active editor before a sidebar mutation republishes workspace carriers without
+    /// selecting another tab. This is an in-memory boundary, independent of save eligibility.
+    @MainActor
+    func flushActiveComposeTabBeforeWorkspaceMutation(workspaceID: UUID) -> Bool {
+        guard let manager = workspaceManager,
+              manager.activeWorkspaceID == workspaceID,
+              let index = manager.workspaces.firstIndex(where: { $0.id == workspaceID }),
+              manager.workspaces[index].activeComposeTabID == activeComposeTabID
+        else { return false }
+        flushAndSnapshotActiveTab(in: manager, workspaceIndex: index)
+        return manager.activeWorkspaceID == workspaceID
+    }
+
     @MainActor
     private func withComposeTabSwitching<T>(
         targetTabID: UUID? = nil,
@@ -4058,6 +4071,7 @@ class PromptViewModel: ObservableObject {
         isMutationContextCurrent: (@MainActor () -> Bool)? = nil,
         postPreflightValidation: (@MainActor () -> Bool)? = nil,
         expandCascade: Bool = true,
+        validateOnly: Bool = false,
         onProjectionRemovalCommitted: ComposeTabsProjectionRemovalCallback? = nil
     ) async -> ComposeTabMutationReport {
         await removeComposeTabs(
@@ -4066,6 +4080,7 @@ class PromptViewModel: ObservableObject {
             expandCascade: expandCascade,
             isMutationContextCurrent: isMutationContextCurrent,
             postPreflightValidation: postPreflightValidation,
+            validateOnly: validateOnly,
             onProjectionRemovalCommitted: onProjectionRemovalCommitted
         )
     }
@@ -4120,6 +4135,7 @@ class PromptViewModel: ObservableObject {
         expandCascade: Bool = true,
         isMutationContextCurrent: (@MainActor () -> Bool)? = nil,
         postPreflightValidation: (@MainActor () -> Bool)? = nil,
+        validateOnly: Bool = false,
         onProjectionRemovalCommitted: ComposeTabsProjectionRemovalCallback? = nil
     ) async -> ComposeTabMutationReport {
         guard !ids.isEmpty else {
@@ -4278,6 +4294,9 @@ class PromptViewModel: ObservableObject {
                 message: "The active tab targets changed during preflight."
             )
         }
+        // Validation-only callers stop here: the required flush and every CAS re-check ran, but no
+        // tab, stashed-row, binding, or listener state has been touched.
+        if validateOnly { return report }
         let fallbackActiveID: UUID? = {
             guard let previousActiveID = manager.workspaces[index].activeComposeTabID,
                   tabsBeingClosed.contains(previousActiveID) else { return nil }
