@@ -47,7 +47,9 @@ extension AgentModeViewModel {
         {
             routedModelDisplayName(
                 rawModel: modelRaw,
-                reasoningEffortRaw: session.selectedReasoningEffortRaw,
+                reasoningEffortRaw: session.selectedAgent.usesClaudeTooling
+                    ? session.selectedClaudeEffortRaw
+                    : session.selectedReasoningEffortRaw,
                 agentKind: session.selectedAgent,
                 showsEffort: !modelRouterSettingsStore.autoEffortEnabled()
             )
