@@ -172,6 +172,118 @@ final class AgentComposerSubmissionAttemptTests: XCTestCase {
 
 @MainActor
 extension AgentComposerSubmissionAttemptTests {
+    func testSavedScopeProvidersConstrainCandidatesAndSubmittedTarget() async throws {
+        let backend = ComposerRoutingBackend(outcome: .preferClaude)
+        let controller = ComposerRoutingCodexController()
+        let (viewModel, store) = try await makeRoutingViewModel(backend: backend, codexController: controller)
+        store.setModelRouterProvider(.codexExec, scope: .primarySession)
+        store.setModelRouterProvider(.claudeCode, scope: .subagent)
+        await viewModel.modelRouterRuntime?.reconcileDemand()
+        let tabID = UUID()
+        viewModel.test_setCurrentTabIDOverride(tabID)
+        let session = viewModel.session(for: tabID)
+        session.selectedAgent = .codexExec
+        session.selectedModelRaw = "gpt-6.1-sol-high"
+        let text = "Implement parser and tests"
+        _ = try XCTUnwrap(viewModel.test_installPersistentSessionBinding(sessionID: UUID(), on: session))
+        session.hasLoadedPersistedState = true
+        // An installed binding admits operations only after restoration is authoritative (#1363).
+        session.recordRestorationAuthoritative(.persistedPayloadApplied)
+        let claim = try routingClaim(viewModel: viewModel, session: session, text: text)
+
+        let result = await viewModel.submitUserTurnAfterFreshTaskRouting(
+            text: text, claim: claim, session: session, destinationTabID: tabID
+        )
+
+        XCTAssertEqual(result, .submitted)
+        XCTAssertEqual(session.selectedAgent, .codexExec)
+        let primaryRequests = await backend.requests
+        let primaryModelRequest = try XCTUnwrap(primaryRequests.first { $0.question.name == "model_route" })
+        XCTAssertTrue(primaryModelRequest.question.choices.allSatisfy { $0.description.hasPrefix("Provider: codexExec;") })
+        XCTAssertEqual(session.automationTurnAudit.last?.acceptedProviderRaw, "codexExec")
+        try await AsyncTestWait.waitUntil("routed Codex turn dispatched or rejected", timeout: 5) {
+            !controller.submittedModels.isEmpty || session.items.contains { $0.kind == .error }
+        }
+        XCTAssertEqual(controller.submittedModels, [CodexModelSpecifier(raw: session.selectedModelRaw).baseModel], session.items.map(\.text).joined(separator: "\n"))
+
+        let child = try await viewModel.routeSubagentTargetIfEnabled(task: text, surface: .headless)
+        XCTAssertEqual(child?.agentRaw, "claudeCode")
+        let childRequests = await backend.requests.dropFirst(primaryRequests.count)
+        let childModelRequest = try XCTUnwrap(childRequests.first { $0.question.name == "model_route" })
+        XCTAssertTrue(childModelRequest.question.choices.allSatisfy { $0.description.hasPrefix("Provider: claudeCode;") })
+    }
+
+    func testSavedScopeProviderFallsBackOnlyWhenUnavailable() async throws {
+        let (viewModel, store) = try await makeRoutingViewModel(backend: ComposerRoutingBackend(outcome: .selectLast))
+        store.setModelRouterProvider(.codexExec, scope: .primarySession)
+        store.setModelRouterProvider(.claudeCode, scope: .subagent)
+        let configuration = store.modelRouterConfiguration()
+        for scope in [AgentTaskRoutingScope.primarySession, .subagent] {
+            let preferred: AgentProviderKind = scope == .primarySession ? .codexExec : .claudeCode
+            XCTAssertEqual(AgentTaskRoutingCandidateBuilder.providers(
+                for: scope, configuration: configuration, availability: viewModel.modelRouterAvailabilityContext
+            ), [preferred])
+            let fallback: AgentProviderKind = preferred == .codexExec ? .claudeCode : .codexExec
+            let availability = AgentModelCatalog.AvailabilityContext(
+                claudeCodeAvailable: fallback == .claudeCode, codexAvailable: fallback == .codexExec, openCodeAvailable: false
+            )
+            XCTAssertEqual(AgentTaskRoutingCandidateBuilder.providers(
+                for: scope, configuration: configuration, availability: availability, surface: .headless
+            ), [fallback])
+            XCTAssertTrue(AgentTaskRoutingCandidateBuilder.providers(
+                for: scope, configuration: configuration, availability: .none, surface: .headless
+            ).isEmpty)
+        }
+    }
+
+    func testAutoEffortFallbackKeepsManualComposerControlsForBothProviders() async throws {
+        let defaults = UserDefaults.standard
+        let keys = ["claudeCodeEffortLevel", "claudeCodeEffortLevelsByModelSlug"]
+        let previous = keys.map { defaults.object(forKey: $0) }
+        defer {
+            for (key, value) in zip(keys, previous) {
+                if let value { defaults.set(value, forKey: key) }
+                else { defaults.removeObject(forKey: key) }
+            }
+        }
+        for unavailable in [false, true] {
+            let backend = ComposerRoutingBackend(
+                outcome: .selectLast,
+                readiness: unavailable ? .needsConfiguration(generation: 1, reason: "No key") : .ready(generation: 1, policyVersion: "fake-v1")
+            )
+            let (viewModel, store) = try await makeRoutingViewModel(backend: backend)
+            store.setModelRouterEnabled(unavailable)
+            store.setAutoEffortBackend(backend.id)
+            store.setAutoEffortEnabled(true)
+            await viewModel.modelRouterRuntime?.reconcileDemand()
+            for provider in [AgentProviderKind.codexExec, .claudeCode] {
+                let tabID = UUID()
+                viewModel.test_setCurrentTabIDOverride(tabID)
+                let session = viewModel.session(for: tabID)
+                session.selectedAgent = provider
+                session.selectedModelRaw = provider == .codexExec ? "gpt-6.1-sol-high" : "claude-opus-5-5"
+                if !unavailable {
+                    session.selectedWorkflow = AgentWorkflowDefinition(customID: UUID(), displayName: "Custom workflow", template: "$ARGUMENTS")
+                } else {
+                    session.hasSentFirstMessage = true
+                }
+                viewModel.updateBindingsFromSession(session)
+                let props = viewModel.makeComposerProps(tabID: tabID)
+                XCTAssertEqual(props.autoEffortServiceName, backend.displayName)
+                XCTAssertFalse(props.areModelControlsDisabled)
+                XCTAssertEqual(props.manualEffortControl, provider == .codexExec ? .codex : .claude)
+
+                if provider == .codexExec { viewModel.selectReasoningEffort(.low) }
+                else { viewModel.setClaudeEffortLevel(.low) }
+                let updated = viewModel.makeComposerProps(tabID: tabID)
+                if provider == .codexExec { XCTAssertEqual(updated.selectedReasoningEffortRaw, "low") }
+                else { XCTAssertEqual(updated.providerControls?.claudeTools?.effortLevel, .low) }
+                XCTAssertTrue(store.autoEffortEnabled(), "Choosing a fallback must not disable global Auto Effort")
+                session.saveDebounceTask?.cancel()
+            }
+        }
+    }
+
     func testGlobalRouterOwnsFreshTaskModelPresentationUntilDisabled() async throws {
         let backend = ComposerRoutingBackend(outcome: .selectLast, id: .jev, displayName: "Jev")
         let decisions = ComposerRoutingBackend(outcome: .selectLast, id: .openAIDecisions, displayName: "Decisions by OpenAI")
@@ -188,6 +300,7 @@ extension AgentComposerSubmissionAttemptTests {
         XCTAssertTrue(routedProps.areModelControlsDisabled)
         XCTAssertEqual(routedProps.automaticRouterServiceName, "Jev")
         XCTAssertNil(routedProps.autoEffortServiceName)
+        XCTAssertNil(routedProps.manualEffortControl, "Router still owns the initial model and effort")
         XCTAssertEqual(session.selectedAgent, .claudeCode)
         XCTAssertEqual(session.selectedModelRaw, AgentModel.claudeHaiku.rawValue)
 
@@ -618,6 +731,49 @@ extension AgentComposerSubmissionAttemptTests {
         XCTAssertTrue(requests.isEmpty, "Independent balancing must not request Jev or require a credential")
     }
 
+    func testUsageBalancingKeepsSavedProviderForPrimaryAndSubagent() async throws {
+        let backend = ComposerRoutingBackend(outcome: .selectLast, readiness: .needsConfiguration(generation: 1, reason: "No key"))
+        let controller = ComposerRoutingCodexController()
+        let (viewModel, store) = try await makeRoutingViewModel(backend: backend, codexController: controller)
+        store.setModelRouterProvider(.codexExec, scope: .primarySession)
+        store.setModelRouterProvider(.codexExec, scope: .subagent)
+        store.setUsageBalancingEnabled(true)
+        let advisor = AgentUsageBalancer()
+        viewModel.modelRouterRuntime?.usageBalancer = advisor
+        let now = Date(), reset = ISO8601DateFormatter().string(from: now.addingTimeInterval(18000))
+        for (provider, used) in [(AgentProviderKind.codexExec, 95), (.claudeCode, 10)] {
+            let value = try ClaudeAccountUsageMapper.snapshot(data: Data("{\"five_hour\":{\"utilization\":\(used),\"resets_at\":\"\(reset)\"}}".utf8), account: .init(lineage: .anthropicFirstParty, opaqueAccountID: nil, credentialProfileID: "test"), observedAt: now)
+            advisor.update(value, provider: provider.rawValue)
+        }
+        let tabID = UUID()
+        viewModel.test_setCurrentTabIDOverride(tabID)
+        let session = viewModel.session(for: tabID)
+        session.selectedAgent = .codexExec
+        session.selectedModelRaw = "gpt-6.1-sol-high"
+        _ = try XCTUnwrap(viewModel.test_installPersistentSessionBinding(sessionID: UUID(), on: session))
+        session.hasLoadedPersistedState = true
+        // An installed binding admits operations only after restoration is authoritative (#1363).
+        session.recordRestorationAuthoritative(.persistedPayloadApplied)
+        let baseline = viewModel.executableTarget(for: session)
+        XCTAssertNil(viewModel.localUsageDecision(basedOn: baseline, scope: .primarySession, surface: .general))
+        let child = try await viewModel.routeSubagentTargetIfEnabled(task: "Implement parser", surface: .headless, baseline: baseline)
+        XCTAssertNil(child)
+        store.setModelRouterProvider(nil, scope: .subagent)
+        let unrestrictedChild = try await viewModel.routeSubagentTargetIfEnabled(task: "Implement parser", surface: .headless, baseline: baseline)
+        XCTAssertEqual(unrestrictedChild?.agentRaw, "claudeCode", "Clearing the child preference must not clear the primary preference")
+        let claim = try routingClaim(viewModel: viewModel, session: session, text: "Implement parser")
+        let result = await viewModel.submitUserTurnAfterFreshTaskRouting(text: "Implement parser", claim: claim, session: session, destinationTabID: tabID)
+        XCTAssertEqual(result, .submitted)
+        XCTAssertEqual(session.selectedAgent, .codexExec)
+        XCTAssertNil(session.automationTurnAudit.last?.router.usageBalancingReason)
+        try await AsyncTestWait.waitUntil("manual Codex turn dispatched or rejected", timeout: 5) {
+            !controller.submittedModels.isEmpty || session.items.contains { $0.kind == .error }
+        }
+        XCTAssertEqual(controller.submittedModels, ["gpt-6.1-sol"], session.items.map(\.text).joined(separator: "\n"))
+        let requests = await backend.requests
+        XCTAssertTrue(requests.isEmpty)
+    }
+
     func testUsageBalancedAuditCannotDispatchAfterModelOrProviderChange() async throws {
         let backend = ComposerRoutingBackend(outcome: .selectLast, readiness: .needsConfiguration(generation: 1, reason: "No key"))
         let (viewModel, store) = try await makeRoutingViewModel(backend: backend)
@@ -811,7 +967,8 @@ extension AgentComposerSubmissionAttemptTests {
 
     private func makeRoutingViewModel(
         backend: any DecisionService,
-        otherBackends: [any DecisionService] = []
+        otherBackends: [any DecisionService] = [],
+        codexController: (any CodexSessionControlling)? = nil
     ) async throws -> (AgentModeViewModel, GlobalSettingsStore) {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -825,17 +982,25 @@ extension AgentComposerSubmissionAttemptTests {
             roles: Set(AgentModelCatalog.TaskLabelKind.allCases),
             providers: [.claudeCode, .codexExec]
         )
-        // Submitted turns use this fixture's non-Codex execution path unless a test
-        // explicitly requests Codex; the frontier no longer pins the final choice.
+        // Keep ordinary submissions on the fixture's non-Codex execution path;
+        // tests covering a Codex preference supply a recording controller explicitly.
         store.setModelRouterProvider(.claudeCode, scope: .primarySession)
         let runtime = try AgentTaskRouterRuntime(registrations: [.init(service: backend)] + otherBackends.map { .init(service: $0) }, demandSource: store)
         addTeardownBlock { await runtime.teardown() }
         let viewModel = AgentModeViewModel(
+            testWorkspacePath: root.path,
             codexControllerFactory: { _, _, _, _, _, _ in
+                if let codexController { return codexController }
                 preconditionFailure("Routing transaction test must not start Codex")
             },
             headlessProviderFactory: { _, _ in UnsupportedHeadlessAgentProvider(reason: "test terminal") }
         )
+        addTeardownBlock { @MainActor in
+            for session in viewModel.sessions.values {
+                await viewModel.test_codexCoordinator.shutdownCodexSession(session)
+                session.saveDebounceTask?.cancel()
+            }
+        }
         viewModel.modelRouterSettingsStore = store
         viewModel.modelRouterRuntime = runtime
         await runtime.reconcileDemand()
@@ -895,7 +1060,7 @@ private actor ComposerDecisionsClient {
 }
 
 private actor ComposerRoutingBackend: DecisionService {
-    enum Outcome { case selectLast, abstain, abstainEffort, cancelEffort }
+    enum Outcome { case selectLast, preferClaude, abstain, abstainEffort, cancelEffort }
     nonisolated let id: DecisionServiceID
     nonisolated let displayName: String
     nonisolated let capabilities = DecisionServiceCapabilities.routerTest
@@ -926,6 +1091,10 @@ private actor ComposerRoutingBackend: DecisionService {
         return switch outcome {
         case .selectLast:
             .selected(opaqueKey: request.question.choices[request.question.choices.count - 1].opaqueKey, evidence: nil)
+        case .preferClaude:
+            .selected(opaqueKey: request.question.choices.first {
+                $0.description.hasPrefix("Provider: claudeCode;")
+            }?.opaqueKey ?? request.question.choices.last!.opaqueKey, evidence: nil)
         case .abstain:
             .abstained(reasonCode: "ambiguous", evidence: nil)
         case .cancelEffort:
@@ -939,6 +1108,51 @@ private actor ComposerRoutingBackend: DecisionService {
                 ? .abstained(reasonCode: "ambiguous effort", evidence: nil)
                 : .selected(opaqueKey: request.question.choices[request.question.choices.count - 1].opaqueKey, evidence: nil)
         }
+    }
+}
+
+private final class ComposerRoutingCodexController: CodexSessionControllerPassiveStubDefaults, @unchecked Sendable {
+    private let lock = NSLock()
+    private var models: [String?] = []
+    private var active = false
+    private let stream = AsyncStream<CodexNativeSessionController.Event>.makeStream()
+    var hasActiveThread: Bool {
+        lock.withLock { active }
+    }
+
+    var events: AsyncStream<CodexNativeSessionController.Event> {
+        stream.stream
+    }
+
+    var submittedModels: [String?] {
+        lock.withLock { models }
+    }
+
+    func startOrResume(
+        existing _: CodexNativeSessionController.SessionRef?,
+        baseInstructions _: String,
+        model: String?,
+        reasoningEffort: String?,
+        serviceTier _: String?
+    ) async throws -> CodexNativeSessionController.SessionRef {
+        lock.withLock { active = true }
+        return .init(conversationID: "scope-preference-test", rolloutPath: nil, model: model, reasoningEffort: reasoningEffort)
+    }
+
+    func startUserTurn(
+        text _: String,
+        images _: [AgentImageAttachment],
+        model: String?,
+        reasoningEffort _: String?,
+        serviceTier _: String?
+    ) async throws -> CodexTurnStartReceipt {
+        lock.withLock { models.append(model) }
+        return CodexTurnStartReceipt(provisionalSubmissionID: "scope-preference-test")
+    }
+
+    func shutdown() async {
+        lock.withLock { active = false }
+        stream.continuation.finish()
     }
 }
 

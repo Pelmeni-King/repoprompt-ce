@@ -221,6 +221,7 @@ final class AgentCodexModelRegistry {
                 isPlaceholderDefault: false,
                 isProviderDefault: model.isDefault,
                 supportedReasoningEffortRawValues: model.supportedReasoningEffortRawValues,
+                defaultReasoningEffort: model.defaultReasoningEffort,
                 defaultReasoningEffortRawValue: model.defaultReasoningEffortRawValue,
                 effortVariant: model.reasoningEffort.map {
                     AgentModelEffortVariant(baseModelRaw: model.baseID, reasoningEffort: $0)
@@ -306,7 +307,8 @@ final class AgentCodexModelRegistry {
                         description: $0.description
                     )
                 },
-                defaultReasoningEffort: record.defaultReasoningEffort
+                defaultReasoningEffort: record.defaultReasoningEffort,
+                serviceTiers: record.serviceTiers
             )
         }
     }

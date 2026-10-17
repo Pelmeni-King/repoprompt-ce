@@ -13,7 +13,9 @@ extension AgentModeViewModel {
         let availability = scope == .subagent
             ? modelRouterAvailabilityContext.filteredForRecommendationProviders(modelRouterSettingsStore.globalRecommendationProviderFilter())
             : modelRouterAvailabilityContext
-        let allowed = AgentTaskRoutingCandidateBuilder.availableProviders(
+        let allowed = AgentTaskRoutingCandidateBuilder.providers(
+            for: scope,
+            configuration: configuration,
             availability: availability,
             surface: surface
         )

@@ -136,7 +136,7 @@ extension AgentModeViewModel {
               modelRouterRuntime?.isBackendReady(backendID) == true
         else { return }
         guard (try? AgentTaskRoutingCandidateBuilder().build(
-            allowedProviders: providers(for: .primarySession),
+            allowedProviders: providers(for: .primarySession, configuration: configuration),
             availability: modelRouterAvailabilityContext
         )) != nil else { return }
         modelRouterSettingsStore.setModelRouterEnabled(true)
@@ -184,7 +184,7 @@ extension AgentModeViewModel {
             )
         }
 
-        let providers = providers(for: .primarySession)
+        let providers = providers(for: .primarySession, configuration: configuration)
         let routeTask = Task {
             await routeModelThenEffort(
                 requestID: claim.attempt.id,
@@ -507,7 +507,7 @@ extension AgentModeViewModel {
             text: task,
             scope: .subagent,
             surface: surface,
-            providers: providers(for: .subagent),
+            providers: providers(for: .subagent, configuration: configuration),
             configuration: configuration,
             backendID: backendID,
             runtime: runtime,
@@ -667,8 +667,10 @@ extension AgentModeViewModel {
             && current.selectedBackendID == backendID
     }
 
-    private func providers(for scope: AgentTaskRoutingScope) -> Set<AgentProviderKind> {
-        AgentTaskRoutingCandidateBuilder.availableProviders(
+    private func providers(for scope: AgentTaskRoutingScope, configuration: AgentTaskRouterConfiguration) -> Set<AgentProviderKind> {
+        AgentTaskRoutingCandidateBuilder.providers(
+            for: scope,
+            configuration: configuration,
             availability: modelRouterAvailabilityContext,
             surface: scope == .subagent ? .headless : .general
         )
@@ -721,7 +723,7 @@ extension AgentModeViewModel {
               modelRouterRuntime?.isBackendReady(backendID) == true
         else { return false }
         return AgentTaskRoutingCandidateBuilder().hasAvailableTarget(
-            allowedProviders: providers(for: .primarySession),
+            allowedProviders: providers(for: .primarySession, configuration: configuration),
             availability: modelRouterAvailabilityContext
         )
     }

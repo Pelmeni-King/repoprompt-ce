@@ -21,6 +21,17 @@ final class AgentSessionLinkToolCatalogPolicyTests: XCTestCase {
     func testModelSelectionMigrationFullEntryBudgetAndConvergence() throws {
         let previous = MCPDomainCanonicalToolDefinitions.test_agentSessionLinkPreviousStopDefinition()
         let current = try XCTUnwrap(MCPDomainCanonicalToolDefinitions.definition(named: toolName))
+        XCTAssertTrue(current.description.contains("direct link or overseer opt-in"))
+        let beforeActivationGuidance = MCPDomainToolDefinition(
+            name: current.name,
+            description: current.description.replacingOccurrences(
+                of: "- `create_lane`: direct link or overseer opt-in; make your lane; unique `idempotency_key`.",
+                with: "- `create_lane`: under a direct link, create your top-level lane; unique `idempotency_key`."
+            ),
+            inputSchema: current.inputSchema, annotations: current.annotations,
+            isEnabledByDefault: current.isEnabledByDefault
+        )
+        XCTAssertEqual(MCPDomainCanonicalToolDefinitions.test_canonicalizeAgentSessionLink(beforeActivationGuidance), current)
         XCTAssertEqual(MCPDomainCanonicalToolDefinitions.test_canonicalizeAgentSessionLink(previous), current)
         XCTAssertEqual(MCPDomainCanonicalToolDefinitions.test_canonicalizeAgentSessionLink(current), current)
         let encoder = JSONEncoder()
@@ -1116,7 +1127,11 @@ final class AgentSessionLinkToolCatalogPolicyTests: XCTestCase {
         let bootstrap = MCPWindowToolName.becomeOverseer
         _ = try await runtime.toolRegistry.register(registrationID: MCPDomainToolRegistrationID(), scope: .window(id: 1), bindings: [binding(toolName: toolName), binding(toolName: bootstrap)])
         let definition = try XCTUnwrap(MCPDomainCanonicalToolDefinitions.definition(named: bootstrap))
-        XCTAssertEqual(definition.description, "Unlock oversight: create, message, steer and monitor persistent agents (lanes) in any workspace.")
+        XCTAssertTrue(definition.description.contains("tool discovery"))
+        XCTAssertTrue(definition.description.contains("next turn"))
+        XCTAssertTrue(definition.description.contains("Grants no authority"))
+        XCTAssertTrue(definition.description.contains("user-approved workspace scope with observe"))
+        XCTAssertFalse(definition.description.contains("in any workspace"))
         XCTAssertEqual(definition.inputSchema.objectValue?["properties"], .object([:]))
         XCTAssertNil(MCPDomainToolCatalog.operationArgumentKey(for: bootstrap))
         for (label, eligible, activated, exact, expected) in [

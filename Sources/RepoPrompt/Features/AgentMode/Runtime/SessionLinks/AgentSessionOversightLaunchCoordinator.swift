@@ -110,7 +110,7 @@ protocol AgentSessionOversightLaunchCoordinatorDelegate: AnyObject {
     ///
     /// - Parameter proof: the binding-qualified hydration proof this entry was classified against.
     ///   It travels *through* the shared path rather than being re-derived inside it, because the
-    ///   resolver there deliberately gates on the legacy `hasLoadedPersistedState` latch.
+    ///   endpoint eligibility alone does not preserve the exact hydration outcome across awaits.
     func launchCoordinatorEstablish(
         pair: AgentSessionOversightIntent,
         token: AgentSessionOversightIntentToken?,
@@ -463,6 +463,11 @@ final class AgentSessionOversightLaunchCoordinator {
         if !launchPairOrder.contains(pair) { launchPairOrder.append(pair) }
     }
 
+    /// The token a still-owed cleanup for `pair` would remove, if any.
+    func pendingCleanupToken(for pair: AgentSessionOversightIntent) -> AgentSessionOversightIntentToken? {
+        if case let .cleanupPending(token) = entries[pair]?.state { token } else { nil }
+    }
+
     var hasPendingCleanup: Bool {
         entries.values.contains { if case .cleanupPending = $0.state { true } else { false } }
     }
@@ -736,7 +741,9 @@ final class AgentSessionOversightLaunchCoordinator {
                 case 1:
                     switch matches[0].restorationReadiness {
                     case .pending, .unbound: true
-                    case .authoritative, .terminal: false
+                    // An owned creation must finish its configured first save. Loading a missing
+                    // payload cannot establish that preparation or authorize its replacement.
+                    case .creating, .authoritative, .terminal: false
                     }
                 default:
                     false
@@ -832,7 +839,7 @@ final class AgentSessionOversightLaunchCoordinator {
                     // Still inspect the other endpoint for a proven terminal reason.
                     continue
                 }
-            case .pending, .unbound:
+            case .creating, .pending, .unbound:
                 return .wait
             }
         }

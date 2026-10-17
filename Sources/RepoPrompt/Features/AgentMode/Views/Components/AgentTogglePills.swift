@@ -158,6 +158,31 @@ struct AgentIconTogglePill: View {
     }
 }
 
+/// Proposes at most `maxWidth` to its single child and adopts the child's size,
+/// so short labels hug their text while long labels truncate at the cap.
+/// A flexible `.frame(maxWidth:)` would instead expand to the cap and center the text.
+struct AgentPillLabelWidthCap: Layout {
+    let maxWidth: CGFloat
+
+    private func cappedProposal(_ proposal: ProposedViewSize) -> ProposedViewSize {
+        ProposedViewSize(width: min(proposal.width ?? maxWidth, maxWidth), height: proposal.height)
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache _: inout Void) -> CGSize {
+        guard let child = subviews.first else { return .zero }
+        let size = child.sizeThatFits(cappedProposal(proposal))
+        return CGSize(width: min(size.width, maxWidth), height: size.height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal _: ProposedViewSize, subviews: Subviews, cache _: inout Void) {
+        subviews.first?.place(
+            at: CGPoint(x: bounds.minX, y: bounds.midY),
+            anchor: .leading,
+            proposal: ProposedViewSize(width: bounds.width, height: bounds.height)
+        )
+    }
+}
+
 // MARK: - Model Router Pill
 
 struct AgentModelRouterPill: View {
@@ -208,10 +233,12 @@ struct AgentModelRouterPill: View {
                         .font(fontScale.preset.swiftUIFont(sizeAtNormal: 14, weight: .semibold))
                 }
                 if let routedModelDisplayName {
-                    Text(routedModelDisplayName)
-                        .font(fontScale.preset.swiftUIFont(sizeAtNormal: 10, weight: .semibold))
-                        .lineLimit(1)
-                        .truncationMode(.middle)
+                    AgentPillLabelWidthCap(maxWidth: 140) {
+                        Text(routedModelDisplayName)
+                            .font(fontScale.preset.swiftUIFont(sizeAtNormal: 10, weight: .semibold))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
                 }
             }
             .foregroundStyle(props.isOn ? Color.accentColor : .secondary)
